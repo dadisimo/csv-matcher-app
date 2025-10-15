@@ -124,10 +124,10 @@
                     </button>
                 </div>
                 
-                <!-- Ignore Headless Toggle -->
+                <!-- Show Unhealthy Only Toggle -->
                 <div class="flex items-center gap-2">
-                    <input type="checkbox" id="ignore-headless" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2">
-                    <label for="ignore-headless" class="text-sm font-medium text-slate-700">Ignore headless</label>
+                    <input type="checkbox" id="show-unhealthy-only" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2">
+                    <label for="show-unhealthy-only" class="text-sm font-medium text-slate-700">Show unhealthy only</label>
                 </div>
             </div>
             
@@ -182,7 +182,7 @@
         const sortDirectionBtn = document.getElementById('sort-direction');
         const columnFilter = document.getElementById('column-filter');
         const showAllColumnsBtn = document.getElementById('show-all-columns');
-        const ignoreHeadlessToggle = document.getElementById('ignore-headless');
+        const showUnhealthyOnlyToggle = document.getElementById('show-unhealthy-only');
         
         let mergedData = [];
         let mergedHeaders = [];
@@ -190,9 +190,81 @@
         let sortColumn = '';
         let sortDirection = 'asc';
         let servicesFileName = '';
-        let ignoreHeadless = false;
+        let showUnhealthyOnly = false;
 
-        // --- Core Functions ---
+        /**
+         * Parses HTML content to extract links and text separately.
+         * @param {string} content - The HTML content to parse.
+         * @returns {Object} Object with extracted links and text.
+         */
+        const parseHtmlContent = (content) => {
+            if (!content || typeof content !== 'string') return { text: content || '', links: [] };
+            
+            // Create a temporary element to parse HTML
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = content;
+            
+            const links = [];
+            const anchors = tempDiv.querySelectorAll('a[href]');
+            
+            anchors.forEach((anchor, index) => {
+                links.push({
+                    url: anchor.href,
+                    text: anchor.textContent || anchor.href
+                });
+            });
+            
+            // Get text content without the links
+            let textContent = tempDiv.textContent || tempDiv.innerText || '';
+            
+            return { text: textContent.trim(), links };
+        };
+
+        /**
+         * Expands columns that contain multiple links into separate columns.
+         * @param {Array<Object>} data - The data to process.
+         * @returns {Object} Object with expanded data and new headers.
+         */
+        const expandLinksIntoColumns = (data) => {
+            if (data.length === 0) return { expandedData: data, newHeaders: [] };
+            
+            const expandedData = [];
+            const additionalHeaders = new Set();
+            
+            data.forEach(row => {
+                const newRow = {};
+                
+                Object.keys(row).forEach(column => {
+                    const content = row[column] || '';
+                    const parsed = parseHtmlContent(content);
+                    
+                    if (parsed.links.length > 0) {
+                        // If there's text content, keep the original column for text
+                        if (parsed.text) {
+                            newRow[column] = parsed.text;
+                        } else {
+                            newRow[column] = '';
+                        }
+                        
+                        // Create separate columns for each link
+                        parsed.links.forEach((link, index) => {
+                            const linkColumnName = parsed.links.length === 1 
+                                ? `${column}_Link` 
+                                : `${column}_Link_${index + 1}`;
+                            newRow[linkColumnName] = link.url;
+                            additionalHeaders.add(linkColumnName);
+                        });
+                    } else {
+                        // No links, keep original content
+                        newRow[column] = content;
+                    }
+                });
+                
+                expandedData.push(newRow);
+            });
+            
+            return { expandedData, newHeaders: Array.from(additionalHeaders) };
+        };
 
         /**
          * Sorts the merged data by a specific column.
@@ -282,19 +354,29 @@
          * Refreshes the table with current sort and filter settings.
          */
         const refreshTable = () => {
-            const sortedData = sortData(mergedData, sortColumn, sortDirection);
+            let dataToShow = [...mergedData];
+            
+            // Apply unhealthy filter if enabled
+            if (showUnhealthyOnly) {
+                dataToShow = dataToShow.filter(row => {
+                    const status0 = (row['Status0'] || '').toUpperCase();
+                    return !status0.includes('FULL_SERVICE');
+                });
+            }
+            
+            const sortedData = sortData(dataToShow, sortColumn, sortDirection);
             displayTable(sortedData, visibleHeaders);
         };
 
         /**
-         * Reprocesses the data with current settings (including ignore headless toggle).
+         * Reprocesses the data with current settings.
          */
         const reprocessData = () => {
             if (mergedData.length === 0) return;
             
-            // Get the original data from global variables (we need to store them)
+            // Get the original data from global variables
             if (window.originalJiraData && window.originalServicesData) {
-                ignoreHeadless = ignoreHeadlessToggle.checked;
+                showUnhealthyOnly = showUnhealthyOnlyToggle.checked;
                 const { mergedData: reprocessedData, matchesFound } = processData(window.originalJiraData, window.originalServicesData);
                 mergedData = reprocessedData;
                 summaryText.textContent = `Processing complete. Found ${matchesFound} matches across ${window.originalJiraData.length} JIRA entries.`;
@@ -388,8 +470,8 @@
                     for (const serviceRow of servicesData) {
                         let serviceName = (serviceRow['Service0'] || '').toLowerCase();
                         
-                        // Apply ignore headless logic if toggle is enabled
-                        if (ignoreHeadless && serviceName.endsWith('-headless')) {
+                        // Always ignore headless suffixes
+                        if (serviceName.endsWith('-headless')) {
                             serviceName = serviceName.replace(/-headless$/, '');
                         }
                         
@@ -582,7 +664,7 @@
             try {
                 // 2. Store services file name, get toggle state, and read files
                 servicesFileName = servicesFile.name.replace('.csv', '');
-                ignoreHeadless = ignoreHeadlessToggle.checked;
+                showUnhealthyOnly = showUnhealthyOnlyToggle.checked;
                 
                 const [jiraText, servicesText] = await Promise.all([
                     readFileAsText(jiraFile),
@@ -606,12 +688,15 @@
 
                 // 4. Process the data
                 const { mergedData: processedData, matchesFound } = processData(jiraData, servicesData);
-                mergedData = processedData; // Store globally for download
+                
+                // 4.5. Expand columns with multiple links
+                const { expandedData, newHeaders: linkHeaders } = expandLinksIntoColumns(processedData);
+                mergedData = expandedData; // Store globally for download
 
-                // 5. Determine all unique headers for the final table (including Environment and Is Same Version)
+                // 5. Determine all unique headers for the final table (including Environment, Is Same Version, and link columns)
                 const jiraHeaders = Object.keys(jiraData[0] || {});
                 const servicesHeaders = Object.keys(servicesData[0] || {});
-                mergedHeaders = [...new Set(['Environment', ...jiraHeaders, ...servicesHeaders, 'Is Same Version'])]; // Store globally with Environment first and Is Same Version last
+                mergedHeaders = [...new Set(['Environment', ...jiraHeaders, ...servicesHeaders, 'Is Same Version', ...linkHeaders])]; // Store globally with Environment first and Is Same Version last
 
                 // 6. Display results
                 initializeSortOptions(mergedHeaders);
@@ -686,8 +771,11 @@
         // Show all columns button
         showAllColumnsBtn.addEventListener('click', showAllColumns);
         
-        // Ignore headless toggle
-        ignoreHeadlessToggle.addEventListener('change', reprocessData);
+        // Show unhealthy only toggle
+        showUnhealthyOnlyToggle.addEventListener('change', () => {
+            showUnhealthyOnly = showUnhealthyOnlyToggle.checked;
+            refreshTable();
+        });
     </script>
 
 </body>
