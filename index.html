@@ -40,6 +40,40 @@
         .table-container::-webkit-scrollbar-thumb:hover {
             background: #64748b; /* slate-500 */
         }
+        /* Sorting indicators */
+        .sort-header {
+            cursor: pointer;
+            user-select: none;
+        }
+        .sort-header:hover {
+            background-color: #e2e8f0; /* slate-200 */
+        }
+        .sort-indicator {
+            margin-left: 4px;
+            opacity: 0.5;
+        }
+        .sort-indicator.active {
+            opacity: 1;
+        }
+        /* Column filter chips */
+        .column-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.25rem 0.5rem;
+            background-color: #e2e8f0; /* slate-200 */
+            border-radius: 0.375rem;
+            font-size: 0.75rem;
+            margin: 0.125rem;
+        }
+        .column-chip-remove {
+            cursor: pointer;
+            font-weight: bold;
+            color: #64748b; /* slate-500 */
+        }
+        .column-chip-remove:hover {
+            color: #ef4444; /* red-500 */
+        }
     </style>
     <link rel="preconnect" href="https://rsms.me/">
     <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
@@ -76,6 +110,42 @@
             </button>
         </div>
 
+        <!-- Table Controls (Initially Hidden) -->
+        <div id="table-controls" class="hidden space-y-4 pt-4 border-t border-slate-200">
+            <!-- Sort Controls -->
+            <div class="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+                <div class="flex items-center gap-2">
+                    <label for="sort-column" class="text-sm font-medium text-slate-700">Sort by:</label>
+                    <select id="sort-column" class="px-3 py-1 border border-slate-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <option value="">Select column...</option>
+                    </select>
+                    <button id="sort-direction" class="px-3 py-1 border border-slate-300 rounded-md text-sm hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        ↑ ASC
+                    </button>
+                </div>
+                
+                <!-- Ignore Headless Toggle -->
+                <div class="flex items-center gap-2">
+                    <input type="checkbox" id="ignore-headless" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2">
+                    <label for="ignore-headless" class="text-sm font-medium text-slate-700">Ignore headless</label>
+                </div>
+            </div>
+            
+            <!-- Column Filter -->
+            <div>
+                <div class="flex justify-between items-center mb-2">
+                    <label class="text-sm font-medium text-slate-700">Visible Columns:</label>
+                    <button id="show-all-columns" class="text-xs px-2 py-1 bg-slate-200 text-slate-700 rounded hover:bg-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        Show All
+                    </button>
+                </div>
+                <div id="column-filter" class="border border-slate-300 rounded-md p-3 min-h-[2.5rem] bg-white">
+                    <!-- Column chips will be added here dynamically -->
+                </div>
+                <p class="text-xs text-slate-500 mt-1">Click the × next to a column name to hide it from the table.</p>
+            </div>
+        </div>
+
         <!-- Error and Loading Section -->
         <div id="status-container" class="text-center p-4"></div>
 
@@ -107,11 +177,130 @@
         const downloadBtn = document.getElementById('download-btn');
         const resultsTable = document.getElementById('results-table');
         const summaryText = document.getElementById('summary-text');
+        const tableControls = document.getElementById('table-controls');
+        const sortColumnSelect = document.getElementById('sort-column');
+        const sortDirectionBtn = document.getElementById('sort-direction');
+        const columnFilter = document.getElementById('column-filter');
+        const showAllColumnsBtn = document.getElementById('show-all-columns');
+        const ignoreHeadlessToggle = document.getElementById('ignore-headless');
         
         let mergedData = [];
         let mergedHeaders = [];
+        let visibleHeaders = [];
+        let sortColumn = '';
+        let sortDirection = 'asc';
+        let servicesFileName = '';
+        let ignoreHeadless = false;
 
         // --- Core Functions ---
+
+        /**
+         * Sorts the merged data by a specific column.
+         * @param {Array<Object>} data - The data to sort.
+         * @param {string} column - The column to sort by.
+         * @param {string} direction - 'asc' or 'desc'.
+         * @returns {Array<Object>} The sorted data.
+         */
+        const sortData = (data, column, direction) => {
+            if (!column) return data;
+            
+            return [...data].sort((a, b) => {
+                const aVal = a[column] || '';
+                const bVal = b[column] || '';
+                
+                // Try to parse as numbers first
+                const aNum = parseFloat(aVal);
+                const bNum = parseFloat(bVal);
+                
+                if (!isNaN(aNum) && !isNaN(bNum)) {
+                    return direction === 'asc' ? aNum - bNum : bNum - aNum;
+                }
+                
+                // Otherwise sort as strings
+                const comparison = aVal.toString().localeCompare(bVal.toString());
+                return direction === 'asc' ? comparison : -comparison;
+            });
+        };
+
+        /**
+         * Initializes the sort column dropdown.
+         * @param {Array<string>} headers - Available column headers.
+         */
+        const initializeSortOptions = (headers) => {
+            sortColumnSelect.innerHTML = '<option value="">Select column...</option>';
+            headers.forEach(header => {
+                const option = document.createElement('option');
+                option.value = header;
+                option.textContent = header;
+                sortColumnSelect.appendChild(option);
+            });
+        };
+
+        /**
+         * Creates column filter chips.
+         * @param {Array<string>} headers - All available headers.
+         * @param {Array<string>} visible - Currently visible headers (optional).
+         */
+        const createColumnFilter = (headers, visible = null) => {
+            columnFilter.innerHTML = '';
+            if (visible === null) {
+                visibleHeaders = [...headers]; // Initialize all columns as visible only if not provided
+            }
+            
+            headers.forEach(header => {
+                const chip = document.createElement('span');
+                chip.className = 'column-chip';
+                chip.style.display = visibleHeaders.includes(header) ? 'inline-flex' : 'none';
+                chip.innerHTML = `
+                    ${header}
+                    <span class="column-chip-remove" data-column="${header}">×</span>
+                `;
+                columnFilter.appendChild(chip);
+            });
+        };
+
+        /**
+         * Removes a column from the visible headers and updates the display.
+         * @param {string} columnToRemove - The column to hide.
+         */
+        const removeColumn = (columnToRemove) => {
+            visibleHeaders = visibleHeaders.filter(h => h !== columnToRemove);
+            createColumnFilter(mergedHeaders, visibleHeaders);
+            refreshTable();
+        };
+
+        /**
+         * Shows all columns again.
+         */
+        const showAllColumns = () => {
+            visibleHeaders = [...mergedHeaders];
+            createColumnFilter(mergedHeaders, visibleHeaders);
+            refreshTable();
+        };
+
+        /**
+         * Refreshes the table with current sort and filter settings.
+         */
+        const refreshTable = () => {
+            const sortedData = sortData(mergedData, sortColumn, sortDirection);
+            displayTable(sortedData, visibleHeaders);
+        };
+
+        /**
+         * Reprocesses the data with current settings (including ignore headless toggle).
+         */
+        const reprocessData = () => {
+            if (mergedData.length === 0) return;
+            
+            // Get the original data from global variables (we need to store them)
+            if (window.originalJiraData && window.originalServicesData) {
+                ignoreHeadless = ignoreHeadlessToggle.checked;
+                const { mergedData: reprocessedData, matchesFound } = processData(window.originalJiraData, window.originalServicesData);
+                mergedData = reprocessedData;
+                summaryText.textContent = `Processing complete. Found ${matchesFound} matches across ${window.originalJiraData.length} JIRA entries.`;
+                refreshTable();
+            }
+        };
 
         /**
          * Parses CSV text into an array of objects.
@@ -192,9 +381,18 @@
                 const summary = (jiraRow['Summary'] || '').toLowerCase();
                 let matchFoundForRow = false;
 
+                // Add Environment column with the services file name
+                newRow['Environment'] = servicesFileName;
+
                 if (summary) {
                     for (const serviceRow of servicesData) {
-                        const serviceName = (serviceRow['Service0'] || '').toLowerCase();
+                        let serviceName = (serviceRow['Service0'] || '').toLowerCase();
+                        
+                        // Apply ignore headless logic if toggle is enabled
+                        if (ignoreHeadless && serviceName.endsWith('-headless')) {
+                            serviceName = serviceName.replace(/-headless$/, '');
+                        }
+                        
                         if (serviceName && summary.includes(serviceName)) {
                             // Match found, extend the JIRA row with service data
                             Object.assign(newRow, serviceRow);
@@ -204,6 +402,49 @@
                         }
                     }
                 }
+
+                // Add "Is Same Version" column logic
+                const version0 = newRow['Version0'];
+                if (version0) {
+                    const summaryOriginal = jiraRow['Summary'] || '';
+                    const version0Lower = version0.toLowerCase();
+                    
+                    let isMatch = false;
+                    
+                    // Look for version patterns like production_w42_20251013 in the summary
+                    // Pattern: word_w##_########
+                    const versionPattern = /\b([a-zA-Z]+)_(w\d+)_(\d{8})\b/g;
+                    const matches = summaryOriginal.toLowerCase().match(versionPattern);
+                    
+                    if (matches) {
+                        // Check each version pattern found in summary
+                        for (const match of matches) {
+                            const parts = match.split('_');
+                            if (parts.length === 3) {
+                                const [environment, week, date] = parts;
+                                
+                                // Check if all three parts exist in Version0
+                                if (version0Lower.includes(environment) && 
+                                    version0Lower.includes(week) && 
+                                    version0Lower.includes(date)) {
+                                    isMatch = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // If no pattern found, fall back to simple inclusion check
+                    if (!matches) {
+                        isMatch = version0Lower.includes(summaryOriginal.toLowerCase());
+                    }
+                    
+                    newRow['Is Same Version'] = isMatch ? 'true' : 'false';
+                } else {
+                    // If Version0 doesn't exist, leave empty
+                    newRow['Is Same Version'] = '';
+                }
+
                 return newRow;
             });
             return { mergedData: processedData, matchesFound };
@@ -224,8 +465,21 @@
             headers.forEach(headerText => {
                 const th = document.createElement('th');
                 th.scope = 'col';
-                th.className = 'px-6 py-3';
-                th.textContent = headerText;
+                th.className = 'px-6 py-3 sort-header';
+                th.setAttribute('data-column', headerText);
+                
+                // Add header text and sort indicator
+                const headerContent = document.createElement('div');
+                headerContent.className = 'flex items-center justify-between';
+                headerContent.innerHTML = `
+                    <span>${headerText}</span>
+                    <span class="sort-indicator ${sortColumn === headerText ? 'active' : ''}">${
+                        sortColumn === headerText 
+                            ? (sortDirection === 'asc' ? '↑' : '↓')
+                            : '↕'
+                    }</span>
+                `;
+                th.appendChild(headerContent);
                 headerRow.appendChild(th);
             });
             thead.appendChild(headerRow);
@@ -323,9 +577,13 @@
             setStatus('Processing files...', 'loading');
             processBtn.disabled = true;
             resultsContainer.classList.add('hidden');
+            tableControls.classList.add('hidden');
 
             try {
-                // 2. Read and Parse Files
+                // 2. Store services file name, get toggle state, and read files
+                servicesFileName = servicesFile.name.replace('.csv', '');
+                ignoreHeadless = ignoreHeadlessToggle.checked;
+                
                 const [jiraText, servicesText] = await Promise.all([
                     readFileAsText(jiraFile),
                     readFileAsText(servicesFile)
@@ -333,6 +591,10 @@
 
                 const jiraData = parseCSV(jiraText, 'Summary');
                 const servicesData = parseCSV(servicesText, 'Service0');
+                
+                // Store original data globally for reprocessing
+                window.originalJiraData = jiraData;
+                window.originalServicesData = servicesData;
                 
                 // 3. Check for required columns
                 if (jiraData.length === 0) {
@@ -346,21 +608,25 @@
                 const { mergedData: processedData, matchesFound } = processData(jiraData, servicesData);
                 mergedData = processedData; // Store globally for download
 
-                // 5. Determine all unique headers for the final table
+                // 5. Determine all unique headers for the final table (including Environment and Is Same Version)
                 const jiraHeaders = Object.keys(jiraData[0] || {});
                 const servicesHeaders = Object.keys(servicesData[0] || {});
-                mergedHeaders = [...new Set([...jiraHeaders, ...servicesHeaders])]; // Store globally
+                mergedHeaders = [...new Set(['Environment', ...jiraHeaders, ...servicesHeaders, 'Is Same Version'])]; // Store globally with Environment first and Is Same Version last
 
                 // 6. Display results
-                displayTable(mergedData, mergedHeaders);
+                initializeSortOptions(mergedHeaders);
+                createColumnFilter(mergedHeaders);
+                displayTable(mergedData, visibleHeaders);
                 summaryText.textContent = `Processing complete. Found ${matchesFound} matches across ${jiraData.length} JIRA entries.`;
                 setStatus('', 'success'); // Clear loading status
                 resultsContainer.classList.remove('hidden');
+                tableControls.classList.remove('hidden');
 
             } catch (error) {
                 console.error("Processing failed:", error);
                 setStatus(error.message || 'An unexpected error occurred.');
                 resultsContainer.classList.add('hidden');
+                tableControls.classList.add('hidden');
             } finally {
                 processBtn.disabled = false;
             }
@@ -371,13 +637,57 @@
                 setStatus('No data available to download.');
                 return;
             }
-            const csvContent = convertToCSV(mergedData, mergedHeaders);
+            const sortedData = sortData(mergedData, sortColumn, sortDirection);
+            const csvContent = convertToCSV(sortedData, visibleHeaders);
             downloadFile(csvContent, 'merged_jira_data.csv', 'text/csv;charset=utf-8;');
         };
 
         // --- Attach Event Listeners ---
         processBtn.addEventListener('click', handleProcess);
         downloadBtn.addEventListener('click', handleDownload);
+        
+        // Sort controls
+        sortColumnSelect.addEventListener('change', (e) => {
+            sortColumn = e.target.value;
+            refreshTable();
+        });
+        
+        sortDirectionBtn.addEventListener('click', () => {
+            sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+            sortDirectionBtn.textContent = sortDirection === 'asc' ? '↑ ASC' : '↓ DESC';
+            refreshTable();
+        });
+        
+        // Table header clicks for sorting
+        resultsTable.addEventListener('click', (e) => {
+            const header = e.target.closest('.sort-header');
+            if (header) {
+                const column = header.getAttribute('data-column');
+                if (sortColumn === column) {
+                    sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+                } else {
+                    sortColumn = column;
+                    sortDirection = 'asc';
+                }
+                sortColumnSelect.value = sortColumn;
+                sortDirectionBtn.textContent = sortDirection === 'asc' ? '↑ ASC' : '↓ DESC';
+                refreshTable();
+            }
+        });
+        
+        // Column filter chips
+        columnFilter.addEventListener('click', (e) => {
+            if (e.target.classList.contains('column-chip-remove')) {
+                const columnToRemove = e.target.getAttribute('data-column');
+                removeColumn(columnToRemove);
+            }
+        });
+        
+        // Show all columns button
+        showAllColumnsBtn.addEventListener('click', showAllColumns);
+        
+        // Ignore headless toggle
+        ignoreHeadlessToggle.addEventListener('change', reprocessData);
     </script>
 
 </body>
