@@ -74,6 +74,28 @@
         .column-chip-remove:hover {
             color: #ef4444; /* red-500 */
         }
+        /* Editable table cells */
+        .editable-cell {
+            cursor: text;
+            position: relative;
+        }
+        .editable-cell:hover {
+            background-color: #f8fafc; /* slate-50 */
+        }
+        .cell-editor {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            border: 2px solid #3b82f6; /* blue-500 */
+            padding: 8px;
+            background: white;
+            font-family: inherit;
+            font-size: inherit;
+            outline: none;
+            resize: none;
+        }
     </style>
     <link rel="preconnect" href="https://rsms.me/">
     <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
@@ -97,9 +119,9 @@
             </div>
             <!-- Services CSV Input -->
             <div>
-                <label for="services-file" class="block text-sm font-medium text-slate-700 mb-1">2. Upload Services CSV</label>
-                <p class="text-xs text-slate-500 mb-2">Must contain a "Service0" column.</p>
-                <input type="file" id="services-file" accept=".csv" class="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition-colors duration-200"/>
+                <label for="services-file" class="block text-sm font-medium text-slate-700 mb-1">2. Upload Services CSV(s)</label>
+                <p class="text-xs text-slate-500 mb-2">Must contain a "Service0" column. You can select multiple files.</p>
+                <input type="file" id="services-file" accept=".csv" multiple class="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition-colors duration-200"/>
             </div>
         </div>
         
@@ -128,6 +150,12 @@
                 <div class="flex items-center gap-2">
                     <input type="checkbox" id="show-unhealthy-only" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2">
                     <label for="show-unhealthy-only" class="text-sm font-medium text-slate-700">Show unhealthy only</label>
+                </div>
+                
+                <!-- Show Unequal Versions Only Toggle -->
+                <div class="flex items-center gap-2">
+                    <input type="checkbox" id="show-unequal-versions-only" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2">
+                    <label for="show-unequal-versions-only" class="text-sm font-medium text-slate-700">Show unequal versions only</label>
                 </div>
             </div>
             
@@ -183,14 +211,16 @@
         const columnFilter = document.getElementById('column-filter');
         const showAllColumnsBtn = document.getElementById('show-all-columns');
         const showUnhealthyOnlyToggle = document.getElementById('show-unhealthy-only');
+        const showUnequalVersionsOnlyToggle = document.getElementById('show-unequal-versions-only');
         
         let mergedData = [];
         let mergedHeaders = [];
         let visibleHeaders = [];
         let sortColumn = '';
         let sortDirection = 'asc';
-        let servicesFileName = '';
+        let servicesFileNames = [];
         let showUnhealthyOnly = false;
+        let showUnequalVersionsOnly = false;
 
         /**
          * Parses HTML content to extract links and text separately.
@@ -351,6 +381,80 @@
         };
 
         /**
+         * Makes a table cell editable.
+         * @param {HTMLElement} cell - The cell to make editable.
+         */
+        const makeEditable = (cell) => {
+            const currentValue = cell.textContent;
+            const rowIndex = parseInt(cell.getAttribute('data-row'));
+            const columnName = cell.getAttribute('data-column');
+            
+            // Create input element
+            const input = document.createElement('textarea');
+            input.className = 'cell-editor';
+            input.value = currentValue;
+            
+            // Position and show input
+            cell.style.position = 'relative';
+            cell.appendChild(input);
+            input.focus();
+            input.select();
+            
+            // Save on Enter or blur
+            const saveEdit = () => {
+                const newValue = input.value;
+                cell.textContent = newValue;
+                cell.style.position = '';
+                
+                // Update the data in mergedData
+                let dataToShow = [...mergedData];
+                
+                // Apply filters to get the correct row index
+                if (showUnhealthyOnly) {
+                    dataToShow = dataToShow.filter(row => {
+                        const status0 = (row['Status0'] || '').toUpperCase();
+                        return !status0.includes('FULL_SERVICE');
+                    });
+                }
+                
+                if (showUnequalVersionsOnly) {
+                    dataToShow = dataToShow.filter(row => {
+                        const isSameVersion = (row['Is Same Version'] || '').toLowerCase();
+                        return isSameVersion !== 'true';
+                    });
+                }
+                
+                const sortedData = sortData(dataToShow, sortColumn, sortDirection);
+                
+                if (sortedData[rowIndex]) {
+                    // Find the original row in mergedData and update it
+                    const originalRow = sortedData[rowIndex];
+                    const originalIndex = mergedData.findIndex(row => row === originalRow);
+                    if (originalIndex !== -1) {
+                        mergedData[originalIndex][columnName] = newValue;
+                    }
+                }
+            };
+            
+            // Cancel on Escape
+            const cancelEdit = () => {
+                cell.textContent = currentValue;
+                cell.style.position = '';
+            };
+            
+            input.addEventListener('blur', saveEdit);
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    saveEdit();
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    cancelEdit();
+                }
+            });
+        };
+
+        /**
          * Refreshes the table with current sort and filter settings.
          */
         const refreshTable = () => {
@@ -361,6 +465,14 @@
                 dataToShow = dataToShow.filter(row => {
                     const status0 = (row['Status0'] || '').toUpperCase();
                     return !status0.includes('FULL_SERVICE');
+                });
+            }
+            
+            // Apply unequal versions filter if enabled
+            if (showUnequalVersionsOnly) {
+                dataToShow = dataToShow.filter(row => {
+                    const isSameVersion = (row['Is Same Version'] || '').toLowerCase();
+                    return isSameVersion !== 'true';
                 });
             }
             
@@ -375,11 +487,16 @@
             if (mergedData.length === 0) return;
             
             // Get the original data from global variables
-            if (window.originalJiraData && window.originalServicesData) {
+            if (window.originalJiraData && window.originalAllServicesData && window.originalServicesFileNames) {
                 showUnhealthyOnly = showUnhealthyOnlyToggle.checked;
-                const { mergedData: reprocessedData, matchesFound } = processData(window.originalJiraData, window.originalServicesData);
+                showUnequalVersionsOnly = showUnequalVersionsOnlyToggle.checked;
+                const { mergedData: reprocessedData, matchesFound } = processMultipleServicesData(
+                    window.originalJiraData, 
+                    window.originalAllServicesData, 
+                    window.originalServicesFileNames
+                );
                 mergedData = reprocessedData;
-                summaryText.textContent = `Processing complete. Found ${matchesFound} matches across ${window.originalJiraData.length} JIRA entries.`;
+                summaryText.textContent = `Processing complete. Found ${matchesFound} matches across ${window.originalJiraData.length} JIRA entries using ${window.originalServicesFileNames.length} services file(s).`;
                 refreshTable();
             }
         };
@@ -451,85 +568,97 @@
         };
 
         /**
-         * Merges JIRA and Services data based on the matching logic.
+         * Merges JIRA data with multiple Services files.
          * @param {Array<Object>} jiraData - Parsed JIRA CSV data.
-         * @param {Array<Object>} servicesData - Parsed Services CSV data.
+         * @param {Array<Array<Object>>} allServicesData - Array of parsed Services CSV data arrays.
+         * @param {Array<string>} fileNames - Array of service file names.
          * @returns {{mergedData: Array<Object>, matchesFound: number}} The merged data and match count.
          */
-        const processData = (jiraData, servicesData) => {
-            let matchesFound = 0;
-            const processedData = jiraData.map(jiraRow => {
-                const newRow = { ...jiraRow };
-                const summary = (jiraRow['Summary'] || '').toLowerCase();
-                let matchFoundForRow = false;
+        const processMultipleServicesData = (jiraData, allServicesData, fileNames) => {
+            let totalMatchesFound = 0;
+            const allProcessedData = [];
+            
+            // Process each services file with the JIRA data
+            allServicesData.forEach((servicesData, fileIndex) => {
+                const currentFileName = fileNames[fileIndex];
+                
+                const processedData = jiraData.map(jiraRow => {
+                    const newRow = { ...jiraRow };
+                    const summary = (jiraRow['Summary'] || '').toLowerCase();
+                    let matchFoundForRow = false;
 
-                // Add Environment column with the services file name
-                newRow['Environment'] = servicesFileName;
+                    // Add Environment column with the current services file name
+                    newRow['Environment'] = currentFileName;
 
-                if (summary) {
-                    for (const serviceRow of servicesData) {
-                        let serviceName = (serviceRow['Service0'] || '').toLowerCase();
-                        
-                        // Always ignore headless suffixes
-                        if (serviceName.endsWith('-headless')) {
-                            serviceName = serviceName.replace(/-headless$/, '');
-                        }
-                        
-                        if (serviceName && summary.includes(serviceName)) {
-                            // Match found, extend the JIRA row with service data
-                            Object.assign(newRow, serviceRow);
-                            matchesFound++;
-                            matchFoundForRow = true;
-                            break; // Stop after the first match for this JIRA row
-                        }
-                    }
-                }
-
-                // Add "Is Same Version" column logic
-                const version0 = newRow['Version0'];
-                if (version0) {
-                    const summaryOriginal = jiraRow['Summary'] || '';
-                    const version0Lower = version0.toLowerCase();
-                    
-                    let isMatch = false;
-                    
-                    // Look for version patterns like production_w42_20251013 in the summary
-                    // Pattern: word_w##_########
-                    const versionPattern = /\b([a-zA-Z]+)_(w\d+)_(\d{8})\b/g;
-                    const matches = summaryOriginal.toLowerCase().match(versionPattern);
-                    
-                    if (matches) {
-                        // Check each version pattern found in summary
-                        for (const match of matches) {
-                            const parts = match.split('_');
-                            if (parts.length === 3) {
-                                const [environment, week, date] = parts;
-                                
-                                // Check if all three parts exist in Version0
-                                if (version0Lower.includes(environment) && 
-                                    version0Lower.includes(week) && 
-                                    version0Lower.includes(date)) {
-                                    isMatch = true;
-                                    break;
-                                }
+                    if (summary) {
+                        for (const serviceRow of servicesData) {
+                            let serviceName = (serviceRow['Service0'] || '').toLowerCase();
+                            
+                            // Always ignore headless suffixes
+                            if (serviceName.endsWith('-headless')) {
+                                serviceName = serviceName.replace(/-headless$/, '');
+                            }
+                            
+                            if (serviceName && summary.includes(serviceName)) {
+                                // Match found, extend the JIRA row with service data
+                                Object.assign(newRow, serviceRow);
+                                totalMatchesFound++;
+                                matchFoundForRow = true;
+                                break; // Stop after the first match for this JIRA row
                             }
                         }
                     }
-                    
-                    // If no pattern found, fall back to simple inclusion check
-                    if (!matches) {
-                        isMatch = version0Lower.includes(summaryOriginal.toLowerCase());
-                    }
-                    
-                    newRow['Is Same Version'] = isMatch ? 'true' : 'false';
-                } else {
-                    // If Version0 doesn't exist, leave empty
-                    newRow['Is Same Version'] = '';
-                }
 
-                return newRow;
+                    // Add "Is Same Version" column logic
+                    const version0 = newRow['Version0'];
+                    if (version0) {
+                        const summaryOriginal = jiraRow['Summary'] || '';
+                        const version0Lower = version0.toLowerCase();
+                        
+                        let isMatch = false;
+                        
+                        // Look for version patterns like production_w42_20251013 in the summary
+                        // Pattern: word_w##_########
+                        const versionPattern = /\b([a-zA-Z]+)_(w\d+)_(\d{8})\b/g;
+                        const matches = summaryOriginal.toLowerCase().match(versionPattern);
+                        
+                        if (matches) {
+                            // Check each version pattern found in summary
+                            for (const match of matches) {
+                                const parts = match.split('_');
+                                if (parts.length === 3) {
+                                    const [environment, week, date] = parts;
+                                    
+                                    // Check if all three parts exist in Version0
+                                    if (version0Lower.includes(environment) && 
+                                        version0Lower.includes(week) && 
+                                        version0Lower.includes(date)) {
+                                        isMatch = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // If no pattern found, fall back to simple inclusion check
+                        if (!matches) {
+                            isMatch = version0Lower.includes(summaryOriginal.toLowerCase());
+                        }
+                        
+                        newRow['Is Same Version'] = isMatch ? 'true' : 'false';
+                    } else {
+                        // If Version0 doesn't exist, leave empty
+                        newRow['Is Same Version'] = '';
+                    }
+
+                    return newRow;
+                });
+                
+                // Add all rows from this services file to the combined results
+                allProcessedData.push(...processedData);
             });
-            return { mergedData: processedData, matchesFound };
+            
+            return { mergedData: allProcessedData, matchesFound: totalMatchesFound };
         };
 
         /**
@@ -569,13 +698,15 @@
 
             // Create table body
             const tbody = document.createElement('tbody');
-            data.forEach((row, index) => {
+            data.forEach((row, rowIndex) => {
                 const tr = document.createElement('tr');
-                tr.className = index % 2 === 0 ? 'bg-white border-b' : 'bg-slate-50 border-b';
+                tr.className = rowIndex % 2 === 0 ? 'bg-white border-b' : 'bg-slate-50 border-b';
                 headers.forEach(header => {
                     const td = document.createElement('td');
-                    td.className = 'px-6 py-4';
+                    td.className = 'px-6 py-4 editable-cell';
                     td.textContent = row[header] || ''; // Use empty string for missing values
+                    td.setAttribute('data-row', rowIndex);
+                    td.setAttribute('data-column', header);
                     tr.appendChild(td);
                 });
                 tbody.appendChild(tr);
@@ -649,11 +780,11 @@
 
         const handleProcess = async () => {
             const jiraFile = jiraFileInput.files[0];
-            const servicesFile = servicesFileInput.files[0];
+            const servicesFiles = Array.from(servicesFileInput.files);
 
             // 1. Validation
-            if (!jiraFile || !servicesFile) {
-                setStatus('Please select both CSV files.');
+            if (!jiraFile || servicesFiles.length === 0) {
+                setStatus('Please select JIRA CSV and at least one Services CSV file.');
                 return;
             }
             setStatus('Processing files...', 'loading');
@@ -662,32 +793,38 @@
             tableControls.classList.add('hidden');
 
             try {
-                // 2. Store services file name, get toggle state, and read files
-                servicesFileName = servicesFile.name.replace('.csv', '');
+                // 2. Store services file names, get toggle state, and read files
+                servicesFileNames = servicesFiles.map(file => file.name.replace('.csv', ''));
                 showUnhealthyOnly = showUnhealthyOnlyToggle.checked;
+                showUnequalVersionsOnly = showUnequalVersionsOnlyToggle.checked;
                 
-                const [jiraText, servicesText] = await Promise.all([
-                    readFileAsText(jiraFile),
-                    readFileAsText(servicesFile)
-                ]);
+                // Read JIRA file
+                const jiraText = await readFileAsText(jiraFile);
+                
+                // Read all services files
+                const servicesTexts = await Promise.all(servicesFiles.map(file => readFileAsText(file)));
 
                 const jiraData = parseCSV(jiraText, 'Summary');
-                const servicesData = parseCSV(servicesText, 'Service0');
+                const allServicesData = servicesTexts.map(text => parseCSV(text, 'Service0'));
                 
                 // Store original data globally for reprocessing
                 window.originalJiraData = jiraData;
-                window.originalServicesData = servicesData;
+                window.originalAllServicesData = allServicesData;
+                window.originalServicesFileNames = servicesFileNames;
                 
                 // 3. Check for required columns
                 if (jiraData.length === 0) {
                     throw new Error('JIRA CSV is missing data or the "Summary" column could not be found.');
                 }
-                if (servicesData.length === 0) {
-                    throw new Error('Services CSV is missing data or the "Service0" column could not be found.');
+                
+                for (let i = 0; i < allServicesData.length; i++) {
+                    if (allServicesData[i].length === 0) {
+                        throw new Error(`Services CSV "${servicesFiles[i].name}" is missing data or the "Service0" column could not be found.`);
+                    }
                 }
 
-                // 4. Process the data
-                const { mergedData: processedData, matchesFound } = processData(jiraData, servicesData);
+                // 4. Process the data with multiple services files
+                const { mergedData: processedData, matchesFound } = processMultipleServicesData(jiraData, allServicesData, servicesFileNames);
                 
                 // 4.5. Expand columns with multiple links
                 const { expandedData, newHeaders: linkHeaders } = expandLinksIntoColumns(processedData);
@@ -695,14 +832,17 @@
 
                 // 5. Determine all unique headers for the final table (including Environment, Is Same Version, and link columns)
                 const jiraHeaders = Object.keys(jiraData[0] || {});
-                const servicesHeaders = Object.keys(servicesData[0] || {});
-                mergedHeaders = [...new Set(['Environment', ...jiraHeaders, ...servicesHeaders, 'Is Same Version', ...linkHeaders])]; // Store globally with Environment first and Is Same Version last
+                const allServicesHeaders = allServicesData.flat().reduce((acc, serviceData) => {
+                    return [...acc, ...Object.keys(serviceData)];
+                }, []);
+                const uniqueServicesHeaders = [...new Set(allServicesHeaders)];
+                mergedHeaders = [...new Set(['Environment', ...jiraHeaders, ...uniqueServicesHeaders, 'Is Same Version', ...linkHeaders])]; // Store globally with Environment first and Is Same Version last
 
                 // 6. Display results
                 initializeSortOptions(mergedHeaders);
                 createColumnFilter(mergedHeaders);
                 displayTable(mergedData, visibleHeaders);
-                summaryText.textContent = `Processing complete. Found ${matchesFound} matches across ${jiraData.length} JIRA entries.`;
+                summaryText.textContent = `Processing complete. Found ${matchesFound} matches across ${jiraData.length} JIRA entries using ${servicesFiles.length} services file(s).`;
                 setStatus('', 'success'); // Clear loading status
                 resultsContainer.classList.remove('hidden');
                 tableControls.classList.remove('hidden');
@@ -722,7 +862,29 @@
                 setStatus('No data available to download.');
                 return;
             }
-            const sortedData = sortData(mergedData, sortColumn, sortDirection);
+            
+            // Get the exact same data that's currently shown in the table
+            let dataToDownload = [...mergedData];
+            
+            // Apply the same filters as in refreshTable
+            if (showUnhealthyOnly) {
+                dataToDownload = dataToDownload.filter(row => {
+                    const status0 = (row['Status0'] || '').toUpperCase();
+                    return !status0.includes('FULL_SERVICE');
+                });
+            }
+            
+            if (showUnequalVersionsOnly) {
+                dataToDownload = dataToDownload.filter(row => {
+                    const isSameVersion = (row['Is Same Version'] || '').toLowerCase();
+                    return isSameVersion !== 'true';
+                });
+            }
+            
+            // Apply the same sorting as in refreshTable
+            const sortedData = sortData(dataToDownload, sortColumn, sortDirection);
+            
+            // Use only visible headers (filtered columns)
             const csvContent = convertToCSV(sortedData, visibleHeaders);
             downloadFile(csvContent, 'merged_jira_data.csv', 'text/csv;charset=utf-8;');
         };
@@ -760,6 +922,14 @@
             }
         });
         
+        // Table cell editing
+        resultsTable.addEventListener('click', (e) => {
+            const cell = e.target.closest('.editable-cell');
+            if (cell && !cell.querySelector('.cell-editor')) {
+                makeEditable(cell);
+            }
+        });
+        
         // Column filter chips
         columnFilter.addEventListener('click', (e) => {
             if (e.target.classList.contains('column-chip-remove')) {
@@ -774,6 +944,12 @@
         // Show unhealthy only toggle
         showUnhealthyOnlyToggle.addEventListener('change', () => {
             showUnhealthyOnly = showUnhealthyOnlyToggle.checked;
+            refreshTable();
+        });
+        
+        // Show unequal versions only toggle
+        showUnequalVersionsOnlyToggle.addEventListener('change', () => {
+            showUnequalVersionsOnly = showUnequalVersionsOnlyToggle.checked;
             refreshTable();
         });
     </script>
